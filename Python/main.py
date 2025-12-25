@@ -1,86 +1,89 @@
 import asyncio
 import struct
+import argparse
+import configparser
 import time
-import argparse # コマンドライン引数用
 
 from bleak import BleakScanner, BleakClient
-from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData 
+from pythonosc import udp_client  # OSC sending library
 
-from pythonosc import udp_client # OSC送信ライブラリ
-
-# --- BLE設定 ---
+# --- BLE Settings ---
 HEART_RATE_SERVICE_UUID = "0000180D-0000-1000-8000-00805F9B34FB"  # 180D
 HEART_RATE_MEASUREMENT_CHAR_UUID = "00002A37-0000-1000-8000-00805F9B34FB" # 2A37
-TARGET_DEVICE_NAME = "HW706"
+BATTERY_SERVICE_UUID = "0000180F-0000-1000-8000-00805F9B34FB"  # Battery Service
+BATTERY_LEVEL_CHAR_UUID = "00002A19-0000-1000-8000-00805F9B34FB"  # Battery Level
 
-# --- OSC設定 (グローバル変数として定義し、後で初期化) ---
+# --- OSC Settings (defined as global variables, initialized later) ---
 osc_client = None
-device_name_for_osc = "UnknownDevice" # OSCで送るデバイス名
 
-# --- 通知ハンドラー ---
-def notification_handler(sender, data):
-    """
-    心拍数測定値の通知を受信したときに呼び出される関数
-    """
-    flags = data[0]
-    hr_format = (flags >> 0) & 0x01  # 0: UINT8, 1: UINT16
-    
-    energy_expended_present = (flags >> 3) & 0x01
-    rr_interval_present = (flags >> 4) & 0x01
+# --- Battery Monitoring ---
+async def read_battery_level(client: BleakClient):
+    try:
+        battery_data = await client.read_gatt_char(BATTERY_LEVEL_CHAR_UUID)
+        battery_level = int(battery_data[0])
+        print(f"Battery Level: {battery_level}%")
+    except Exception as e:
+        print(f"Could not read battery level: {e}")
 
-    heart_rate = 0
-    offset = 1
-
-    if hr_format == 0:  # UINT8
-        heart_rate = data[offset]
-        offset += 1
-    else:  # UINT16
-        heart_rate = struct.unpack("<H", data[offset:offset+2])[0]
-        offset += 2
-
-    current_timestamp_ms = int(time.time() * 1000) # 現在のタイムスタンプをミリ秒で取得
-
-    print(f"心拍数: {heart_rate} bpm")
-    
-    # OSC送信
-    if osc_client:
-        try:
-            # /avatar/parameters/HeartRate [timestamp (ms)] [デバイス名] [心拍数]
-            osc_client.send_message("/avatar/parameters/HeartRate", [0, device_name_for_osc, heart_rate])
-            # print(f"OSC送信: /avatar/parameters/HeartRate {current_timestamp_ms} {device_name_for_osc} {heart_rate}")
-        except Exception as e:
-            print(f"OSC送信エラー: {e}")
-
-    if energy_expended_present:
-        energy_expended = struct.unpack("<H", data[offset:offset+2])[0]
-        offset += 2
-        print(f"  消費エネルギー: {energy_expended} joules")
-
-    if rr_interval_present:
-        rr_intervals = []
-        while offset < len(data):
-            rr_interval = struct.unpack("<H", data[offset:offset+2])[0]
-            rr_intervals.append(rr_interval / 1024.0) # 1/1024秒単位
-            offset += 2
-        print(f"  RR Interval: {rr_intervals} s")
-
-# --- メイン処理 ---
+# --- Main Process ---
 async def run(args):
-    global osc_client, device_name_for_osc # グローバル変数を更新できるようにする
+    def notification_handler(sender, data):
+        """
+        Function called when heart rate measurement notifications are received
+        """
+        flags = data[0]
+        hr_format = (flags >> 0) & 0x01  # 0: UINT8, 1: UINT16
+        
+        energy_expended_present = (flags >> 3) & 0x01
+        rr_interval_present = (flags >> 4) & 0x01
 
-    # OSCクライアントの初期化
+        heart_rate = 0
+        offset = 1
+
+        if hr_format == 0:  # UINT8
+            heart_rate = data[offset]
+            offset += 1
+        else:  # UINT16
+            heart_rate = struct.unpack("<H", data[offset:offset+2])[0]
+            offset += 2
+
+        print(f"Heart Rate: {heart_rate} bpm")
+        
+        # Send OSC
+        if osc_client:
+            try:
+                osc_client.send_message(args.osc_path, [heart_rate])
+                print(f"OSC Sent: {args.osc_path} {heart_rate}")
+            except Exception as e:
+                print(f"OSC Send Error: {e}")
+
+        if energy_expended_present:
+            energy_expended = struct.unpack("<H", data[offset:offset+2])[0]
+            offset += 2
+            print(f"  Energy Expended: {energy_expended} joules")
+
+        if rr_interval_present:
+            rr_intervals = []
+            while offset < len(data):
+                rr_interval = struct.unpack("<H", data[offset:offset+2])[0]
+                rr_intervals.append(rr_interval / 1024.0)  # in 1/1024 second units
+                offset += 2
+            print(f"  RR Interval: {rr_intervals} s")
+
+    global osc_client
+
+    # Initialize OSC client
     if args.osc_ip and args.osc_port:
         osc_client = udp_client.SimpleUDPClient(args.osc_ip, args.osc_port)
-        print(f"OSC送信先: {args.osc_ip}:{args.osc_port}")
+        print(f"OSC Destination: {args.osc_ip}:{args.osc_port}")
     else:
-        print("OSC送信先IPアドレスとポートが指定されていません。OSC送信は行いません。")
+        print("OSC destination IP address and port not specified. OSC sending will not be performed.")
 
-    print("BLEデバイスをスキャン中...")
+    print("Scanning BLE devices. This can take a while...")
     
     devices_to_process = []
     try:
-        discovered_data = await BleakScanner.discover(timeout=5, return_adv=True)
+        discovered_data = await BleakScanner.discover(timeout=10, return_adv=True)
         for device, advertisement_data in discovered_data:
             devices_to_process.append((device, advertisement_data.service_uuids, device.name, advertisement_data.local_name))
             
@@ -90,53 +93,82 @@ async def run(args):
             service_uuids_from_device = device.metadata.get("uuids", []) if hasattr(device, "metadata") else []
             devices_to_process.append((device, service_uuids_from_device, device.name, device.name))
 
-    print("\n--- 検出された全デバイス ---")
+    print("\n--- All Detected Devices ---")
     for device, service_uuids, device_name, local_name in devices_to_process:
-        print(f"  名前: {device_name or local_name or 'N/A'}, アドレス: {device.address}, UUIDs: {service_uuids}")
+        print(f"  Name: {device_name or local_name or 'N/A'}, Address: {device.address}, UUIDs: {service_uuids}")
     print("----------------------------\n")
 
     target_device = None
     for device, service_uuids, device_name, local_name in devices_to_process:
         current_device_name = device_name or local_name
         
-        if current_device_name and TARGET_DEVICE_NAME.lower() in current_device_name.lower():
-            print(f"ターゲットデバイス '{TARGET_DEVICE_NAME}' を発見: {current_device_name} ({device.address})")
+        if current_device_name and args.device_name.lower() in current_device_name.lower():
+            print(f"Target device '{args.device_name}' found: {current_device_name} ({device.address})")
             target_device = device
-            device_name_for_osc = current_device_name # OSC送信用のデバイス名をセット
+            # device_name_for_osc = current_device_name
             break
 
     if not target_device:
-        print(f"ターゲットデバイス '{TARGET_DEVICE_NAME}' が見つかりませんでした。")
-        print("検出されたデバイス名を確認し、TARGET_DEVICE_NAME を修正してみてください。")
+        print(f"Target device '{args.device_name}' not found.")
+        print("Check detected device names and try adjusting device_name in config file or cli.")
+        time.sleep(10)
         return
 
     async with BleakClient(target_device.address) as client:
         if client.is_connected:
-            print(f"{target_device.name} ({target_device.address}) に接続しました。")
+            print(f"Connected to {target_device.name} ({target_device.address}).")
 
             try:
                 await client.start_notify(HEART_RATE_MEASUREMENT_CHAR_UUID, notification_handler)
-                print("心拍数測定の通知を開始しました。Ctrl+Cで終了します。")
+                print("Started heart rate measurement notifications. Press Ctrl+C to exit.")
+
+                # Periodically read battery level
                 while True:
-                    await asyncio.sleep(1) 
+                    await read_battery_level(client)
+                    await asyncio.sleep(30)  # check battery every 30 seconds
             except Exception as e:
-                print(f"エラーが発生しました: {e}")
+                print(f"An error occurred: {e}")
             finally:
                 await client.stop_notify(HEART_RATE_MEASUREMENT_CHAR_UUID)
-                print("通知を停止しました。")
+                print("Stopped notifications.")
         else:
-            print("接続できませんでした。")
+            print("Failed to connect.")
 
-# --- プログラム実行開始 ---
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="BLE心拍計から心拍数を取得し、OSCで送信します。")
-    parser.add_argument("--osc_ip", type=str, default="127.0.0.1",
-                        help="OSC送信先のIPアドレス (デフォルト: 127.0.0.1)")
-    parser.add_argument("--osc_port", type=int, default=9000,
-                        help="OSC送信先のポート番号 (デフォルト: 9000)")
+def read_config():
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+
+    osc_ip = config.get('General', 'osc_ip')
+    osc_port = config.get('General', 'osc_port')
+    osc_path = config.get('General', 'osc_path')
+    device_name = config.get('General', 'device_name')
+
+    return {
+        "osc_ip": osc_ip,
+        "osc_port": osc_port,
+        "osc_path": osc_path,
+        "device_name": device_name
+    }
+
+def main():
+    config_data = read_config()
+    print(f"Configuration data: {config_data}")
+    
+    parser = argparse.ArgumentParser(description="Retrieve heart rate from BLE heart rate monitor and send via OSC.")
+    parser.add_argument("--osc_ip", type=str, default=str(config_data["osc_ip"]),
+                        help="Destination IP address for OSC")
+    parser.add_argument("--osc_port", type=int, default=int(config_data["osc_port"]),
+                        help="Destination port number for OSC")
+    parser.add_argument("--osc_path", type=str, default=str(config_data["osc_path"]),
+                        help="OSC address to send the data to")
+    parser.add_argument("--device_name", type=str, default=str(config_data["device_name"]),
+                        help="The bluetooth device name to connect to")
     args = parser.parse_args()
 
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:
-        print("\nプログラムを終了します。")
+        print("\nProgram terminated.")
+
+if __name__ == "__main__":
+    main()

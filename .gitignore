@@ -1,0 +1,11 @@
+*.7z
+*.zip
+*.log
+.DS_Store
+_*
+Thumbs.db
+.venv
+*.code-workspace
+launch.json
+*.csv
+.python_version
