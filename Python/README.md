@@ -1,22 +1,22 @@
-# cluster-osc-heart-rate
-cluster OSC機能を使って ワールド内で 心拍線センサーの値を表示したり利用したりするためのサンプルです。
+## General
 
-## 概要
-[心拍計アームバンド HW706](https://amzn.to/4lvoeQe) の データを受信する Pythonスクリプト
+A `config.ini` was added to configure common parameters without having to rebuild the script.
 
-## 起動方法
+It defaults to sending osc to the local machine at the VRChat default OSC Port 9000 with path "/avatar/parameters/Heartrate" and a single int number of the current heartrate.
 
-```
-pyenv versions
-pyenv local 3.11.3
+The name set in `device_name` matches all devices *beginning* with this string in case the hardware has it's own auto generated ID suffix.
 
-pip install -r requirements.txt
-python main.py --osc_ip 127.0.0.1 --osc_port 9000
-```
+Please note that the unitypackage included in this repo does not currently work with the modified script without change!
 
-# OSC 送信データ
+## Tested devices
 
-```
-/avatar/parameters/HeartRate [timestamp (ms)] [デバイス名] [心拍数]
-/avatar/parameters/HeartRate 1752857438185 HeartRate 94
-```
+The script has been tested with a Coospo HW706, but should work with many similar devices as long as they used the standardized Bluetooth LE heartrate service UUID of 180D/2A37
+
+## Usage
+
+- Download the github release file and unzip it
+- Add text shader or heartrate display prefab onto avatar
+- Modify osc path in config.ini if needed
+- Run the exe while your heartrate monitor is discoverable (turned on for the HW706)
+- (If your devices is different, take the beginning of the name in the displayed device table and change `device_name` in config.ini to it. Then restart the exe.)
+- Enjoy your heartrate live in vrc
