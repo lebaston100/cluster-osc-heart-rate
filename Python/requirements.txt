@@ -1,2 +1,2 @@
-bleak
-python-osc
+bleak==2.0.0
+python-osc==1.9.3
