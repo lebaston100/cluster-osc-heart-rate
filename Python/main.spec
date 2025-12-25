@@ -45,3 +45,4 @@ isCI = bool(os.getenv("CI"))
 serverpath = "Python/" if isCI else ""
 rootpath = "" if isCI else "../"
 shutil.copyfile(f"{serverpath}config.ini", f"{DISTPATH}/config.ini")
+shutil.copyfile(f"{serverpath}THIRDPARTYLICENSES", f"{DISTPATH}/THIRDPARTYLICENSES")
